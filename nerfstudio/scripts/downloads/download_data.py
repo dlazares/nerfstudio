@@ -251,6 +251,59 @@ class DNerfDownload(DatasetDownload):
         if download_path.exists():
             download_path.unlink()
 
+dynerf_downloads = {
+    "flame-steak": "https://github.com/facebookresearch/Neural_3D_Video/releases/download/v1.0/flame_steak.zip",
+    "sear-steak": "https://github.com/facebookresearch/Neural_3D_Video/releases/download/v1.0/sear_steak.zip",
+    "coffee-martini": "https://github.com/facebookresearch/Neural_3D_Video/releases/download/v1.0/coffee_martini.zip",
+    "cut-roasted-beef": "https://github.com/facebookresearch/Neural_3D_Video/releases/download/v1.0/cut_roasted_beef.zip",
+    "cook-spinach": "https://github.com/facebookresearch/Neural_3D_Video/releases/download/v1.0/cook_spinach.zip",
+    "all": None,
+}
+
+if TYPE_CHECKING:
+    DyNerfCaptureName = str
+else:
+    DyNerfCaptureName = tyro.extras.literal_type_from_choices(dynerf_downloads.keys())
+
+@dataclass
+class DyNerfDownload(DatasetDownload):
+    """Download the N3D dynerf dataset."""
+
+    capture_name: DyNerfCaptureName = "flame-steak"
+    def download(self, save_dir: Path):
+        """Download the N3D Dy-NeRF dataset (https://github.com/facebookresearch/Neural_3D_Video)."""
+
+        install_checks.check_curl_installed()
+        if self.capture_name == "all":
+            for capture_name in dynerf_downloads:
+                if capture_name != "all":
+                    DyNerfDownload(capture_name=capture_name).download(save_dir)
+            return
+
+        assert (
+            self.capture_name in dynerf_downloads
+        ), f"Capture name {self.capture_name} not found in {dynerf_downloads.keys()}"
+        url = dynerf_downloads[self.capture_name]
+        target_path = str(save_dir / "dynerf" / self.capture_name)
+        os.makedirs(target_path, exist_ok=True)
+        download_path = Path(f"{target_path}.zip")
+        tmp_path = str(save_dir / "dynerf" / f".temp_{self.capture_name}")
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        os.makedirs(tmp_path, exist_ok=True)
+
+        subprocess.run(["curl", "-L", url, "-o", download_path], check=True)
+
+        with zipfile.ZipFile(download_path, "r") as zip_ref:
+            zip_ref.extractall(str(tmp_path))
+
+        inner_folders = os.listdir(tmp_path)
+        assert len(inner_folders) == 1, f"There is more than one folder inside this zip file: {inner_folders}"
+        folder = os.path.join(tmp_path, inner_folders[0])
+        shutil.rmtree(target_path)
+        shutil.move(folder, target_path)
+        shutil.rmtree(tmp_path)
+        os.remove(download_path)
+
 
 phototourism_downloads = {
     "brandenburg-gate": "https://www.cs.ubc.ca/research/kmyi_data/imw2020/TrainingData/brandenburg_gate.tar.gz",
@@ -545,6 +598,7 @@ Commands = Union[
     Annotated[NerfstudioDownload, tyro.conf.subcommand(name="nerfstudio")],
     Annotated[Record3dDownload, tyro.conf.subcommand(name="record3d")],
     Annotated[DNerfDownload, tyro.conf.subcommand(name="dnerf")],
+    Annotated[DyNerfDownload, tyro.conf.subcommand(name="dynerf")],
     Annotated[PhototourismDownload, tyro.conf.subcommand(name="phototourism")],
     Annotated[SDFstudioDemoDownload, tyro.conf.subcommand(name="sdfstudio")],
     Annotated[NeRFOSRDownload, tyro.conf.subcommand(name="nerfosr")],
