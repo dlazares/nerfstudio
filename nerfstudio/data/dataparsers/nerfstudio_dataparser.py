@@ -131,6 +131,9 @@ class Nerfstudio(DataParser):
         frames = [meta["frames"][ind] for ind in inds]
 
         for frame in frames:
+            if "time" in frame:
+                if frame["time"] != 0.0:
+                    continue
             filepath = Path(frame["file_path"])
             fname = self._get_fname(filepath, data_dir)
 

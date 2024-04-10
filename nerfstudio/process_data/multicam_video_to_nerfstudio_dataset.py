@@ -239,13 +239,13 @@ class MulticamVideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
                             cam_name = Path(im_data.name).stem
                             nice_frame_num = "{:05d}".format(frame_num)
 
-                            name = Path(f"./{cam_name}/images/{nice_frame_num}.png")
+                            name = Path(f"./{cam_name}/images/frame_{nice_frame_num}.png")
 
                             frame = {
                                 "file_path": name.as_posix(),
                                 "transform_matrix": c2w.tolist(),
                                 "colmap_im_id": im_id,
-                                "time": (frame_num - 1 / num_frames)
+                                "time": (frame_num - 1) / num_frames
                             }
                             # TODO add back camera mask and depth path
                             #if camera_mask_path is not None:
