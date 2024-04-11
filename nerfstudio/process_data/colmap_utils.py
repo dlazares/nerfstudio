@@ -15,7 +15,8 @@
 """
 Tools supporting the execution of COLMAP and preparation of COLMAP-based datasets for nerfstudio training.
 """
-
+import os
+import shutil
 import json
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
@@ -99,6 +100,8 @@ def run_colmap(
     matching_method: Literal["vocab_tree", "exhaustive", "sequential"] = "vocab_tree",
     refine_intrinsics: bool = True,
     colmap_cmd: str = "colmap",
+    undistort_with_colmap: bool = True,
+    use_multicam: bool = True
 ) -> None:
     """Runs COLMAP on the images.
 
@@ -124,13 +127,14 @@ def run_colmap(
         f"{colmap_cmd} feature_extractor",
         f"--database_path {colmap_dir / 'database.db'}",
         f"--image_path {image_dir}",
-        "--ImageReader.single_camera 1",
+        f"--ImageReader.single_camera {0 if use_multicam else 0}",
         f"--ImageReader.camera_model {camera_model.value}",
         f"--SiftExtraction.use_gpu {int(gpu)}",
     ]
     if camera_mask_path is not None:
         feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
     feature_extractor_cmd = " ".join(feature_extractor_cmd)
+    print(f"\n feature extractor \n {feature_extractor_cmd}")
     with status(msg="[bold yellow]Running COLMAP feature extractor...", spinner="moon", verbose=verbose):
         run_command(feature_extractor_cmd, verbose=verbose)
 
@@ -146,6 +150,7 @@ def run_colmap(
         vocab_tree_filename = get_vocab_tree()
         feature_matcher_cmd.append(f'--VocabTreeMatching.vocab_tree_path "{vocab_tree_filename}"')
     feature_matcher_cmd = " ".join(feature_matcher_cmd)
+    print(f"\n feature matcher \n {feature_matcher_cmd}")
     with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
         run_command(feature_matcher_cmd, verbose=verbose)
     CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
@@ -163,6 +168,7 @@ def run_colmap(
         mapper_cmd.append("--Mapper.ba_global_function_tolerance=1e-6")
 
     mapper_cmd = " ".join(mapper_cmd)
+    print(f"\n{mapper_cmd}\n")
 
     with status(
         msg="[bold yellow]Running COLMAP bundle adjustment... (This may take a while)",
@@ -182,6 +188,57 @@ def run_colmap(
             ]
             run_command(" ".join(bundle_adjuster_cmd), verbose=verbose)
         CONSOLE.log("[bold green]:tada: Done refining intrinsics.")
+
+    if undistort_with_colmap:
+        print("STARTING UNDISTORT")
+        undistorted_dir = colmap_dir / "undistorted"
+        undistorted_sparse_dir = colmap_dir / "undistorted/sparse"
+        undistorted_sparse_dir.mkdir(parents=True, exist_ok=True)
+        with status(msg="[bold yellow]Undistorting Images...", spinner="dqpb", verbose=verbose):
+            img_undist_cmd = [
+                f"{colmap_cmd} image_undistorter",
+                f"--image_path {image_dir}",
+                f"--input_path {sparse_dir}/0",
+                f"--output_path {undistorted_dir}",
+                f"--output_type COLMAP",
+            ]
+            run_command(" ".join(img_undist_cmd), verbose=verbose)
+            
+
+            files = os.listdir(undistorted_sparse_dir)
+            os.makedirs(undistorted_sparse_dir / "0", exist_ok=True)
+            # Copy each file from the source directory to the destination directory
+            for file in files:
+                if file == '0':
+                    continue
+                
+                source_file = os.path.join(undistorted_sparse_dir, file)
+                destination_file = os.path.join(undistorted_sparse_dir / "0", file)
+                shutil.move(source_file, destination_file)
+            print("sparse_dir",sparse_dir)
+
+            # Move images and colmap sparse to distorted
+            distorted_dir = colmap_dir / "distorted"
+            distorted_images = distorted_dir / "images"
+            distorted_images.mkdir(parents=True, exist_ok=True)
+            print("distorted_dir",distorted_dir, distorted_images)
+            if os.path.exists(distorted_images):
+                shutil.rmtree(distorted_images)
+            distorted_sparse = distorted_dir / "sparse"
+            if os.path.exists(distorted_sparse):
+                shutil.rmtree(distorted_sparse)
+            shutil.move(str(image_dir),distorted_images)
+            shutil.move(str(sparse_dir), str(distorted_sparse))
+
+            undistort_images_dir = undistorted_sparse_dir.parent / "images"
+            # Move undistorted to images/ and sparse/0
+
+            if os.path.exists(image_dir):
+                shutil.rmtree(image_dir)
+            shutil.move(str(undistort_images_dir), str(image_dir))
+            shutil.move(str(undistorted_sparse_dir), str(sparse_dir))
+
+        CONSOLE.log("[bold green]:tada: Done undistorting images.")
 
 
 def parse_colmap_camera_params(camera) -> Dict[str, Any]:
@@ -395,6 +452,7 @@ def colmap_to_json(
     image_rename_map: Optional[Dict[str, str]] = None,
     ply_filename="sparse_pc.ply",
     keep_original_world_coordinate: bool = False,
+    use_multicam: bool = True
 ) -> int:
     """Converts COLMAP's cameras.bin and images.bin to a JSON file.
 
@@ -445,11 +503,14 @@ def colmap_to_json(
             name = image_rename_map[name]
         name = Path(f"./images/{name}")
 
+
         frame = {
             "file_path": name.as_posix(),
             "transform_matrix": c2w.tolist(),
             "colmap_im_id": im_id,
         }
+
+            
         if camera_mask_path is not None:
             frame["mask_path"] = camera_mask_path.relative_to(camera_mask_path.parent.parent).as_posix()
         if image_id_to_depth_path is not None:

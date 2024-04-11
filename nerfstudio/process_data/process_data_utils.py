@@ -166,7 +166,7 @@ def convert_video_to_images(
         if num_frames == 0:
             CONSOLE.print(f"[bold red]Error: Video has no frames: {video_path}")
             sys.exit(1)
-        CONSOLE.print("Number of frames in video:", num_frames)
+        CONSOLE.print("Number of frames in video:", num_frames, " target: ",num_frames_target)
 
         ffmpeg_cmd = f'ffmpeg -i "{video_path}"'
 
@@ -179,6 +179,7 @@ def convert_video_to_images(
             crop_cmd = f"crop=w=iw*{width}:h=ih*{height}:x=iw*{start_x}:y=ih*{start_y},"
 
         spacing = num_frames // num_frames_target
+        spacing = 1
 
         downscale_chains = [f"[t{i}]scale=iw/{2**i}:ih/{2**i}[out{i}]" for i in range(num_downscales + 1)]
         downscale_dirs = [Path(str(image_dir) + (f"_{2**i}" if i > 0 else "")) for i in range(num_downscales + 1)]
@@ -195,14 +196,17 @@ def convert_video_to_images(
         )
 
         ffmpeg_cmd += " -vsync vfr"
-
-        if spacing > 1:
-            CONSOLE.print("Number of frames to extract:", math.ceil(num_frames / spacing))
-            select_cmd = f"thumbnail={spacing},setpts=N/TB,"
+        use_multicam = True
+        if use_multicam:
+            select_cmd = f"select='lte(n\,{num_frames_target - 1})',"  # Select first N frames
         else:
-            CONSOLE.print("[bold red]Can't satisfy requested number of frames. Extracting all frames.")
-            ffmpeg_cmd += " -pix_fmt bgr8"
-            select_cmd = ""
+            if spacing > 1:
+                CONSOLE.print("Number of frames to extract:", math.ceil(num_frames / spacing))
+                select_cmd = f"thumbnail={spacing},setpts=N/TB,"
+            else:
+                CONSOLE.print("[bold red]Can't satisfy requested number of frames. Extracting all frames.")
+                ffmpeg_cmd += " -pix_fmt bgr8"
+                select_cmd = ""
 
         downscale_cmd = f' -filter_complex "{select_cmd}{crop_cmd}{downscale_chain}"' + "".join(
             [f' -map "[out{i}]" "{downscale_paths[i]}"' for i in range(num_downscales + 1)]
@@ -210,6 +214,8 @@ def convert_video_to_images(
 
         ffmpeg_cmd += downscale_cmd
 
+        CONSOLE.print(f"[bold green] FFMPEG COMMAND: \n {ffmpeg_cmd}")
+     
         run_command(ffmpeg_cmd, verbose=verbose)
 
         num_final_frames = len(list(image_dir.glob("*.png")))
