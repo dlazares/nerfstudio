@@ -480,6 +480,7 @@ class Nerfstudio(DataParser):
         downsample_folder_prefix: prefix of the newly generated downsampled images
         """
 
+
         if self.downscale_factor is None:
             if self.config.downscale_factor is None:
                 test_img = Image.open(data_dir / filepath)

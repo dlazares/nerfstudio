@@ -87,6 +87,8 @@ class DynamicSplatfactoModelConfig(ModelConfig):
     """DynamicSplatfacto Model Config, nerfstudio's implementation of Gaussian Splatting"""
 
     _target: Type = field(default_factory=lambda: DynamicSplatfactoModel)
+    iters_until_fine: int = 300
+    """Number of steps until fine stage kicks in"""
     warmup_length: int = 500
     """period of steps where refinement is turned off"""
     refine_every: int = 100
@@ -174,6 +176,7 @@ class DynamicSplatfactoModel(Model):
         super().__init__(*args, **kwargs)
 
     def populate_modules(self):
+        self.fine = False
         if self.seed_points is not None and not self.config.random_init:
             means = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
         else:
@@ -190,6 +193,7 @@ class DynamicSplatfactoModel(Model):
         dim_sh = num_sh_bases(self.config.sh_degree)
 
         self.W = 64 
+        self.D = 8
 
         self.position_encoding: Encoding = NeRFEncoding(
             in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
@@ -198,12 +202,13 @@ class DynamicSplatfactoModel(Model):
             in_dim=1, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
         )
         self.grid_encoding: Encoding = KPlanesEncoding(resolution=(128,128,128),num_components=self.W)
-        self.deform_network = nn.Sequential(nn.Linear(num_points,num_points),nn.ReLU()) 
+        feature_out = [nn.Linear(self.W + 1, self.W)] + [layer for _ in range(self.D - 1) for layer in (nn.ReLU(), nn.Linear(self.W, self.W))]
+        self.feature_out = nn.Sequential(*feature_out)
         #self.static_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W ,self.W),nn.ReLU(),nn.Linear(self.W , 1),nn.Sigmoid())
         self.mean_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W , 3))
         self.scale_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
-        self.quat_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 4))
-        self.opac_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 1))
+        # self.quat_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 4))
+        #self.opac_mlp = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 1))
 
         if (
             self.seed_points is not None
@@ -620,6 +625,9 @@ class DynamicSplatfactoModel(Model):
 
     def step_cb(self, step):
         self.step = step
+        if step < self.config.iters_until_fine or self.fine:
+            return
+        self.fine = True
 
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and
@@ -637,6 +645,10 @@ class DynamicSplatfactoModel(Model):
         """
         gps = self.get_gaussian_param_groups()
         self.camera_optimizer.get_param_groups(param_groups=gps)
+        gps["fields"] = list(self.scale_mlp.parameters()) + list(self.mean_mlp.parameters())  + list(self.feature_out.parameters()) #+ list(self.quat_mlp.parameters())
+
+        gps["encodings"] = list(self.grid_encoding.parameters()) #+ list(self.temporal_encoding.parameters()) + list(self.position_encoding.parameters())
+        
         return gps
 
     def _get_downscale_factor(self):
@@ -731,22 +743,40 @@ class DynamicSplatfactoModel(Model):
             quats_crop = self.quats[crop_ids]
         else:
             times = camera.times
-            encoded_times = self.temporal_encoding(times)
-            encoded_means = self.position_encoding(self.means)
-            encoded_times = encoded_times.expand(encoded_means.shape[0], -1)  # Expand to match first dimension
-            xyzt = torch.cat((encoded_means, encoded_times), dim=-1)
-            hidden_state = self.grid_encoding(xyzt)
-            if times is not None:
-                deltaO = self.opac_mlp(hidden_state)
+
+            debug = False 
+             
+            if self.fine and times is not None: 
+                #encoded_times = self.temporal_encoding(times)
+                #encoded_means = self.position_encoding(self.means)
+                encoded_times = times
+                encoded_means = self.means
+                encoded_times = encoded_times.expand(encoded_means.shape[0], -1)  # Expand to match first dimension
+                xyzt = torch.cat((encoded_means, encoded_times), dim=-1)
+                encoding = self.grid_encoding(xyzt)
+                encoding = torch.cat((encoding, encoded_times),dim=-1)
+                hidden_state = self.feature_out(encoding)
+
+                #deltaO = self.opac_mlp(hidden_state)
+                #deltaQ = self.quat_mlp(hidden_state) 
                 deltaM = self.mean_mlp(hidden_state)
                 deltaS = self.scale_mlp(hidden_state)
-                deltaQ = self.quat_mlp(hidden_state)
-                opacities_crop = self.opacities + deltaO
+
+                if debug:
+                    import pdb; pdb.set_trace()
+                    print("times",times)
+                    print("encoded times",encoded_times)
+                    print("xyzt",xyzt.shape, xyzt)
+                    print("grid encoding",encoding.shape, encoding)
+                    print("hidden state",hidden_state.shape, hidden_state)
+                    print("means",self.means[:5])
+                    print("delta means",deltaM[:5])
+                opacities_crop = self.opacities #+ deltaO
                 means_crop = self.means + deltaM
                 features_dc_crop = self.features_dc
                 features_rest_crop = self.features_rest
                 scales_crop = self.scales + deltaS
-                quats_crop = self.quats + deltaQ
+                quats_crop = self.quats #+ deltaQ + 1e-6
             else:
                 opacities_crop = self.opacities
                 means_crop = self.means
@@ -982,3 +1012,9 @@ class DynamicSplatfactoModel(Model):
         images_dict = {"img": combined_rgb}
 
         return metrics_dict, images_dict
+
+    def update_to_step(self, step: int) -> None:
+        if step < self.config.iters_until_fine or self.fine: 
+            return
+        self.fine = True
+

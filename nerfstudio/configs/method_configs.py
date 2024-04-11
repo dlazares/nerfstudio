@@ -83,6 +83,7 @@ descriptions = {
     "neus": "Implementation of NeuS. (slow)",
     "neus-facto": "Implementation of NeuS-Facto. (slow)",
     "splatfacto": "Gaussian Splatting model",
+    "dynamic-splatfacto": "Dynamic Multi-cam Gaussian Splatting model",
 }
 
 method_configs["nerfacto"] = TrainerConfig(
@@ -645,7 +646,7 @@ method_configs["splatfacto"] = TrainerConfig(
 )
 
 method_configs["dynamic-splatfacto"] = TrainerConfig(
-    method_name="dyanmic-splatfacto",
+    method_name="dynamic-splatfacto",
     steps_per_eval_image=100,
     steps_per_eval_batch=0,
     steps_per_save=2000,
@@ -683,12 +684,22 @@ method_configs["dynamic-splatfacto"] = TrainerConfig(
             "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
             "scheduler": None,
         },
-        "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
-         "camera_opt": {
+        "quats": {
+            "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None
+        },
+        "camera_opt": {
             "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(
                 lr_final=5e-7, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
             ),
+        },
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=0.0001),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.000001, max_steps=30000),
+        },
+        "encodings": {
+            "optimizer": AdamOptimizerConfig(lr=0.001),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.000001, max_steps=30000),
         },
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
