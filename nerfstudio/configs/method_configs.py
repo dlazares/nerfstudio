@@ -694,12 +694,12 @@ method_configs["dynamic-splatfacto"] = TrainerConfig(
             ),
         },
         "fields": {
-            "optimizer": AdamOptimizerConfig(lr=0.0001),
+            "optimizer": AdamOptimizerConfig(lr=0.001),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.000001, max_steps=30000),
         },
         "encodings": {
-            "optimizer": AdamOptimizerConfig(lr=0.001),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.000001, max_steps=30000),
+            "optimizer": AdamOptimizerConfig(lr=0.01),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
         },
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),

@@ -24,3 +24,7 @@ Look for the unique string output in outputs/ and inspect with `tensorboard --lo
 with downscale factor
 `ns-train dynamic-splatfacto --vis viewer+tensorboard multicam-nerfstudio-data --downscale-factor 8 --data data/dynerf/flame-steak-proc`
 
+
+## View the Dynamic Sequence after training
+Run the viewer and move the time slider in the control panel.
+`ns-viewer --load-config outputs/XXYYZZ/config.yml`
