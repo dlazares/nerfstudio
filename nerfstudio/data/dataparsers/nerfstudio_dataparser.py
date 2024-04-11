@@ -79,6 +79,7 @@ class NerfstudioDataParserConfig(DataParserConfig):
     """Whether to load the 3D points from the colmap reconstruction."""
 
 
+
 @dataclass
 class Nerfstudio(DataParser):
     """Nerfstudio DatasetParser"""
@@ -133,9 +134,9 @@ class Nerfstudio(DataParser):
 
         for frame in frames:
             if "time" in frame:
-                times.append(frame["time"])
                 #if frame["time"] != 0.0:
                 #    continue
+                times.append(frame["time"])
             filepath = Path(frame["file_path"])
             fname = self._get_fname(filepath, data_dir)
 
