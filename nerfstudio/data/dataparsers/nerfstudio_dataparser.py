@@ -100,6 +100,7 @@ class Nerfstudio(DataParser):
         mask_filenames = []
         depth_filenames = []
         poses = []
+        times = []
 
         fx_fixed = "fl_x" in meta
         fy_fixed = "fl_y" in meta
@@ -132,8 +133,9 @@ class Nerfstudio(DataParser):
 
         for frame in frames:
             if "time" in frame:
-                if frame["time"] != 0.0:
-                    continue
+                times.append(frame["time"])
+                #if frame["time"] != 0.0:
+                #    continue
             filepath = Path(frame["file_path"])
             fname = self._get_fname(filepath, data_dir)
 
@@ -279,6 +281,7 @@ class Nerfstudio(DataParser):
         cy = float(meta["cy"]) if cy_fixed else torch.tensor(cy, dtype=torch.float32)[idx_tensor]
         height = int(meta["h"]) if height_fixed else torch.tensor(height, dtype=torch.int32)[idx_tensor]
         width = int(meta["w"]) if width_fixed else torch.tensor(width, dtype=torch.int32)[idx_tensor]
+        times = torch.tensor(times, dtype=torch.float32)[idx_tensor]
         if distort_fixed:
             distortion_params = (
                 torch.tensor(meta["distortion_params"], dtype=torch.float32)
@@ -301,6 +304,7 @@ class Nerfstudio(DataParser):
         if (camera_type in [CameraType.FISHEYE, CameraType.FISHEYE624]) and (fisheye_crop_radius is not None):
             metadata["fisheye_crop_radius"] = fisheye_crop_radius
 
+
         cameras = Cameras(
             fx=fx,
             fy=fy,
@@ -312,6 +316,7 @@ class Nerfstudio(DataParser):
             camera_to_worlds=poses[:, :3, :4],
             camera_type=camera_type,
             metadata=metadata,
+            times=times
         )
 
         assert self.downscale_factor is not None
