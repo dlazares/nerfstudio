@@ -134,9 +134,12 @@ class Nerfstudio(DataParser):
 
         for frame in frames:
             if "time" in frame:
-                #if frame["time"] != 0.0:
-                #    continue
-                times.append(frame["time"])
+                if self.includes_time:
+                    times.append(frame["time"])
+                else:
+                    # For single frame runs, skip any frame thats not at t=0
+                    if frame["time"] != 0.0:
+                        continue
             filepath = Path(frame["file_path"])
             fname = self._get_fname(filepath, data_dir)
 

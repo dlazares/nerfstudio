@@ -39,7 +39,7 @@ class MulticamNerfstudio(Nerfstudio):
     """Nerfstudio DatasetParser"""
     config: MulticamNerfstudioDataParserConfig
     includes_time: bool = True
-    downscale_factor: Optional[int] = 8
+    downscale_factor: Optional[int] = 4
     """Whether to include timestamps"""
 
     def _get_fname(self, filepath: Path, data_dir: Path, downsample_folder_prefix="images_") -> Path:

@@ -30,6 +30,7 @@ from nerfstudio.data.dataparsers.instant_ngp_dataparser import InstantNGPDataPar
 from nerfstudio.data.dataparsers.minimal_dataparser import MinimalDataParserConfig
 from nerfstudio.data.dataparsers.nerfosr_dataparser import NeRFOSRDataParserConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+from nerfstudio.data.dataparsers.multicam_nerfstudio_dataparser import MulticamNerfstudioDataParserConfig
 from nerfstudio.data.dataparsers.nuscenes_dataparser import NuScenesDataParserConfig
 from nerfstudio.data.dataparsers.phototourism_dataparser import PhototourismDataParserConfig
 from nerfstudio.data.dataparsers.scannet_dataparser import ScanNetDataParserConfig
@@ -39,6 +40,7 @@ from nerfstudio.data.dataparsers.sitcoms3d_dataparser import Sitcoms3DDataParser
 from nerfstudio.plugins.registry_dataparser import discover_dataparsers
 
 dataparsers = {
+    "multicam-nerfstudio-data": MulticamNerfstudioDataParserConfig(),
     "nerfstudio-data": NerfstudioDataParserConfig(),
     "minimal-parser": MinimalDataParserConfig(),
     "arkit-data": ARKitScenesDataParserConfig(),
