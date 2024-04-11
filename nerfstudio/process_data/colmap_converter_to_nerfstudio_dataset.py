@@ -142,7 +142,7 @@ class ColmapConverterToNerfstudioDataset(BaseConverterToNerfstudioDataset):
 
         else:
             CONSOLE.log(
-                "[bold yellow]Warning: Could not find existing COLMAP results. " "Not generating transforms.json"
+                f"[bold yellow]Warning: Could not find existing COLMAP results at {self.absolute_colmap_model_path / 'cameras.bin'}. " "Not generating transforms.json"
             )
         return summary_log
 

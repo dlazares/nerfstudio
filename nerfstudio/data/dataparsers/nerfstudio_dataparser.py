@@ -281,7 +281,11 @@ class Nerfstudio(DataParser):
         cy = float(meta["cy"]) if cy_fixed else torch.tensor(cy, dtype=torch.float32)[idx_tensor]
         height = int(meta["h"]) if height_fixed else torch.tensor(height, dtype=torch.int32)[idx_tensor]
         width = int(meta["w"]) if width_fixed else torch.tensor(width, dtype=torch.int32)[idx_tensor]
-        times = torch.tensor(times, dtype=torch.float32)[idx_tensor]
+        if len(times) > 0:
+            times = torch.tensor(times, dtype=torch.float32)[idx_tensor]
+        else:
+            times = None
+
         if distort_fixed:
             distortion_params = (
                 torch.tensor(meta["distortion_params"], dtype=torch.float32)
@@ -316,7 +320,7 @@ class Nerfstudio(DataParser):
             camera_to_worlds=poses[:, :3, :4],
             camera_type=camera_type,
             metadata=metadata,
-            times=times
+            times=times 
         )
 
         assert self.downscale_factor is not None
