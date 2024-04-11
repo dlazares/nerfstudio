@@ -34,6 +34,7 @@ from torch.nn import Parameter
 from typing_extensions import Literal
 
 from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.engine.optimizers import Optimizers
@@ -137,6 +138,10 @@ class SplatfactoModelConfig(ModelConfig):
     output_depth_during_training: bool = False
     """If True, output depth during training. Otherwise, only output depth during evaluation."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
+
+    """Config of the camera optimizer to use"""
+    camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="SO3xR3"))
+
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
     approach is however not suitable to render tiny gaussians at higher or lower resolution than the captured, which
@@ -211,6 +216,10 @@ class SplatfactoModel(Model):
                 "features_rest": features_rest,
                 "opacities": opacities,
             }
+        )
+
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cpu"
         )
 
         # metrics
@@ -609,6 +618,7 @@ class SplatfactoModel(Model):
             Mapping of different parameter groups
         """
         gps = self.get_gaussian_param_groups()
+        self.camera_optimizer.get_param_groups(param_groups=gps)
         return gps
 
     def _get_downscale_factor(self):
@@ -648,6 +658,7 @@ class SplatfactoModel(Model):
 
         # get the background color
         if self.training:
+            optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
             if self.config.background_color == "random":
                 background = torch.rand(3, device=self.device)
             elif self.config.background_color == "white":
@@ -657,6 +668,7 @@ class SplatfactoModel(Model):
             else:
                 background = self.background_color.to(self.device)
         else:
+            optimized_camera_to_world = camera.camera_to_worlds[0, ...]
             if renderers.BACKGROUND_COLOR_OVERRIDE is not None:
                 background = renderers.BACKGROUND_COLOR_OVERRIDE.to(self.device)
             else:
@@ -674,8 +686,8 @@ class SplatfactoModel(Model):
         camera_downscale = self._get_downscale_factor()
         camera.rescale_output_resolution(1 / camera_downscale)
         # shift the camera to center of scene looking at center
-        R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
-        T = camera.camera_to_worlds[0, :3, 3:4]  # 3 x 1
+        R = optimized_camera_to_world[:3, :3]  # 3 x 3
+        T = optimized_camera_to_world[:3, 3:4]  # 3 x 1
         # flip the z and y axes to align with gsplat conventions
         R_edit = torch.diag(torch.tensor([1, -1, -1], device=self.device, dtype=R.dtype))
         R = R @ R_edit
@@ -734,11 +746,11 @@ class SplatfactoModel(Model):
             return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": background}
 
         # Important to allow xys grads to populate properly
-        if self.training:
+        if self.training and self.xys.requires_grad:
             self.xys.retain_grad()
 
         if self.config.sh_degree > 0:
-            viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
+            viewdirs = means_crop.detach() - optimized_camera_to_world.detach()[:3, 3] # (N, 3)
             viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
             n = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
             rgbs = spherical_harmonics(n, viewdirs, colors_crop)
@@ -829,6 +841,7 @@ class SplatfactoModel(Model):
         metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         metrics_dict["gaussian_count"] = self.num_points
+        self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
@@ -867,10 +880,15 @@ class SplatfactoModel(Model):
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
-        return {
+        loss_dict = {
             "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
             "scale_reg": scale_reg,
         }
+        if self.training:
+            # Add loss from camera optimizer
+            self.camera_optimizer.get_loss_dict(loss_dict)
+
+        return loss_dict
 
     @torch.no_grad()
     def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
