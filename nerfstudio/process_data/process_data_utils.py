@@ -198,7 +198,9 @@ def convert_video_to_images(
         ffmpeg_cmd += " -vsync vfr"
         use_multicam = True
         if use_multicam:
-            select_cmd = f"select='lte(n\,{num_frames_target - 1})',"  # Select first N frames
+            select_cmd = ""
+            if num_frames_target < num_frames:
+                select_cmd = f"select='lte(n\,{num_frames_target - 1})',"  # Select first N frames
         else:
             if spacing > 1:
                 CONSOLE.print("Number of frames to extract:", math.ceil(num_frames / spacing))

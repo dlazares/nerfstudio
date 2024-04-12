@@ -4,7 +4,15 @@
 
 `ns-download-data dynerf --capture-name flame-steak`
 
+## Optional: Sync multi cam footage based on timecode metadata (only tested with GoPro)
+Creates new MP4s from original mp4s.
+Note: this may or may not be frame accurate as implemented.
+`ns-process-data sync-multicam --data data/my_gopro_data --output-dir data/my_gopro_data_synced`
+
 ## Process multicam data locally
+Data is expected to be directory of time synced videos named cam00.mp4, cam01.mp4, camxx.mp4
+\
+\
 `ns-process-data multicam-video --data data/dynerf/flame-steak/ --output-dir data/dynerf/flame-steak-proc`
 \
 \

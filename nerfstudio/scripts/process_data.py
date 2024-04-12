@@ -16,12 +16,15 @@
 """Processes a video or image sequence to a nerfstudio compatible dataset."""
 
 
+from collections import namedtuple
 import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
+import subprocess
+import os
 import numpy as np
 import tyro
 from typing_extensions import Annotated
@@ -478,6 +481,115 @@ class ProcessODM(BaseConverterToNerfstudioDataset):
         CONSOLE.rule()
 
 
+VideoInfo = namedtuple("VideoInfo", ["path", "timecode", "fps", "duration","dropframe"])
+
+def get_video_info(video_path):
+    """
+    Extracts timecode, fps, and duration from a video using ffprobe.
+    """
+    # Get timecode (assuming it's in the first stream)
+    timecode_cmd = [ "ffprobe", "-v", "error", "-select_streams", "d", "-show_entries",
+        "stream_tags=timecode", "-of", "default=noprint_wrappers=1:nokey=1",
+        video_path
+    ]
+    result = subprocess.run(timecode_cmd, capture_output=True, text=True)
+    timecode = result.stdout.strip()
+    print("TIMECODE: ",timecode)
+    dropframe = ";" in timecode
+
+    # Get fps
+    result = subprocess.run(["ffprobe", "-v", "quiet", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", video_path], capture_output=True, text=True)
+    fps = eval(result.stdout.strip())
+
+    # Get duration
+    result = subprocess.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path], capture_output=True, text=True)
+    duration = float(result.stdout.strip())
+
+    return VideoInfo(video_path, timecode, fps, duration,dropframe)
+
+def get_frame_number(timecode, fps, drop_frame):
+    """Converts a timecode string to frame number, considering drop-frame."""
+    hours, minutes, seconds, frames = map(int, timecode.replace(";", ":").split(":"))
+    total_seconds = hours * 3600 + minutes * 60 + seconds + frames / fps
+
+    if drop_frame:
+        # Adjust for dropped frames (NTSC 30 fps)
+        dropped_frames = (hours * 2 + minutes // 10) * 2
+        total_seconds -= dropped_frames / fps
+
+    return int(total_seconds * fps)
+
+# Returns the mutual start and end timecode in frame numbers
+def get_overlap(videos_info):
+    """
+    Calculates the overlapping timecode range among multiple videos.
+    """
+    # Assuming timecode format is HH:MM:SS:FF
+    start_frames = [get_frame_number(info.timecode, info.fps, info.dropframe) for info in videos_info]
+    end_frames = [int(start + info.duration * info.fps) for start, info in zip(start_frames, videos_info)]
+
+    # Find the mutual start and end frames
+    mutual_start = int(max(start_frames))
+    mutual_end = int(min(end_frames))
+
+    return mutual_start, mutual_end
+
+def frame_to_sexagesimal(frame_number, fps):
+    """Converts frame number to a timecode string in HH:MM:SS.MILLISECONDS format."""
+    total_seconds = frame_number / fps
+    hours = int(total_seconds / 3600)
+    minutes = int((total_seconds % 3600) / 60)
+    seconds = total_seconds % 60
+    milliseconds = int((seconds - int(seconds)) * 1000)
+    return f"{hours:02}:{minutes:02}:{int(seconds):02}.{milliseconds:03}"
+
+
+def trim_videos(videos_info, mutual_start, mutual_end, output_folder):
+    """Trims videos based on mutual start and end frames, considering individual video timecodes."""
+    for info in videos_info:
+        # Calculate start and end frames relative to each video's timecode
+        video_start_frame = get_frame_number(info.timecode, info.fps, info.dropframe)
+        video_end_frame = int(video_start_frame + info.duration * info.fps)
+
+        # Determine trim start and end points within the video
+        trim_start_frame = max(mutual_start - video_start_frame, 0)
+        trim_end_frame = min(mutual_end - mutual_start,video_end_frame - mutual_start)
+        #trim_end_frame = min(trim_start_frame + (mutual_end - mutual_start),video_end_frame)
+
+        # Convert frame numbers to timecode for ffmpeg
+        start_time = frame_to_sexagesimal(trim_start_frame,info.fps)
+        duration = frame_to_sexagesimal(trim_end_frame,info.fps)
+
+        output_path = os.path.join(output_folder, os.path.basename(info.path))
+        trim_cmd = ["ffmpeg","-hide_banner","-loglevel","panic", "-y", "-i", str(info.path),
+                "-ss", str(start_time), "-t", str(duration), output_path]
+        print(f"\n {' '.join(trim_cmd)}\n")
+        subprocess.run(trim_cmd)
+
+@dataclass
+class SyncMulticam(BaseConverterToNerfstudioDataset):
+    """Process Record3D data into a nerfstudio dataset.
+
+    This script does the following:
+
+    1. Gets the metadata in a mp4 and extracts time synced clips.
+    """
+    def main(self) -> None:
+        """Process mp4s with timecode metadata into time synced videos."""
+        videos = [f for f in self.data.glob("*.mp4")]
+
+        # Get video information for all .mp4 files
+        videos_info = [get_video_info(video) for video in videos]
+
+        # Find the overlapping timecode range
+        mutual_start, mutual_end = get_overlap(videos_info)
+        print(f"Mutual start,end {mutual_start},{mutual_end}")
+
+        # Trim videos and save to output folder
+        print("\nTrimming videos")
+        trim_videos(videos_info, mutual_start, mutual_end, self.output_dir)
+
+
 @dataclass
 class NotInstalled:
     def main(self) -> None:
@@ -487,6 +599,7 @@ class NotInstalled:
 Commands = Union[
     Annotated[ImagesToNerfstudioDataset, tyro.conf.subcommand(name="images")],
     Annotated[VideoToNerfstudioDataset, tyro.conf.subcommand(name="video")],
+    Annotated[SyncMulticam, tyro.conf.subcommand(name="sync-multicam")],
     Annotated[MulticamVideoToNerfstudioDataset, tyro.conf.subcommand(name="multicam-video")],
     Annotated[ProcessPolycam, tyro.conf.subcommand(name="polycam")],
     Annotated[ProcessMetashape, tyro.conf.subcommand(name="metashape")],
