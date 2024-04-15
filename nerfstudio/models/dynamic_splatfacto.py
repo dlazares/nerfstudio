@@ -87,6 +87,7 @@ class DynamicSplatfactoModelConfig(ModelConfig):
     """DynamicSplatfacto Model Config, nerfstudio's implementation of Gaussian Splatting"""
 
     _target: Type = field(default_factory=lambda: DynamicSplatfactoModel)
+
     iters_until_fine: int = 300
     """Number of steps until fine stage kicks in"""
     warmup_length: int = 500

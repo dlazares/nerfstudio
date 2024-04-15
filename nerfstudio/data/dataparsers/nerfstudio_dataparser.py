@@ -189,13 +189,15 @@ class Nerfstudio(DataParser):
             if "depth_file_path" in frame:
                 depth_filepath = Path(frame["depth_file_path"])
                 depth_fname = self._get_fname(depth_filepath, data_dir, downsample_folder_prefix="depths_")
-                depth_filenames.append(depth_fname)
+                if depth_fname.exists():
+                    depth_filenames.append(depth_fname)
 
         assert len(mask_filenames) == 0 or (len(mask_filenames) == len(image_filenames)), """
         Different number of image and mask filenames.
         You should check that mask_path is specified for every frame (or zero frames) in transforms.json.
         """
-        assert len(depth_filenames) == 0 or (len(depth_filenames) == len(image_filenames)), """
+        #assert len(depth_filenames) == 0 or (len(depth_filenames) == len(image_filenames)), 
+        """
         Different number of image and depth filenames.
         You should check that depth_file_path is specified for every frame (or zero frames) in transforms.json.
         """
@@ -260,7 +262,8 @@ class Nerfstudio(DataParser):
         # Choose image_filenames and poses based on split, but after auto orient and scaling the poses.
         image_filenames = [image_filenames[i] for i in indices]
         mask_filenames = [mask_filenames[i] for i in indices] if len(mask_filenames) > 0 else []
-        depth_filenames = [depth_filenames[i] for i in indices] if len(depth_filenames) > 0 else []
+        # depth_filenames = [depth_filenames[i] for i in indices] if len(depth_filenames) > 0 else []
+        depth_filenames = [depth_filenames[i] if i < len(depth_filenames) else None for i in indices]
 
         idx_tensor = torch.tensor(indices, dtype=torch.long)
         poses = poses[idx_tensor]

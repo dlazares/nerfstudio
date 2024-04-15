@@ -16,6 +16,7 @@
 Depth dataset.
 """
 
+import os
 import json
 from pathlib import Path
 from typing import Dict, Union
@@ -110,6 +111,10 @@ class DepthDataset(InputDataset):
         filepath = self.depth_filenames[data["image_idx"]]
         height = int(self._dataparser_outputs.cameras.height[data["image_idx"]])
         width = int(self._dataparser_outputs.cameras.width[data["image_idx"]])
+        if filepath is None:
+            return {}
+        if not os.path.exists(filepath):
+            return {}
 
         # Scale depth images to meter units and also by scaling applied to cameras
         scale_factor = self.depth_unit_scale_factor * self._dataparser_outputs.dataparser_scale
