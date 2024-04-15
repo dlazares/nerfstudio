@@ -16,14 +16,22 @@
 
 """Processes a synced multi-camera video dataset to a nerfstudio compatible dataset."""
 
+import os
 import json
 import numpy as np
 import shutil
 import torch
+import subprocess
+from torch import Tensor
+from torchvision import transforms
+from torchvision.transforms.functional import resize
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 from pathlib import Path
+from PIL import Image
 
+
+from nerfstudio.utils.misc import torch_compile
 from nerfstudio.process_data import equirect_utils, process_data_utils
 from nerfstudio.process_data.colmap_converter_to_nerfstudio_dataset import ColmapConverterToNerfstudioDataset
 from nerfstudio.utils.rich_utils import CONSOLE
@@ -33,6 +41,33 @@ from nerfstudio.data.utils.colmap_parsing_utils import (
     read_cameras_binary,
     read_images_binary,
 )
+
+def image_path_to_tensor(image_path: Path, size: Optional[tuple] = None, black_and_white=False) -> Tensor:
+    """Convert an image from path to a tensor."""
+    img = Image.open(image_path).convert("1") if black_and_white else Image.open(image_path)
+    img_tensor = transforms.ToTensor()(img).permute(1, 2, 0)[..., :3]
+    if size:
+        img_tensor = resize(img_tensor.permute(2, 0, 1), size=size).permute(1, 2, 0)
+    return img_tensor
+
+def save_depth_tensor_to_png(tensor, file_path):
+    """
+    Save a depth tensor to a PNG file.
+
+    Parameters:
+        tensor (torch.Tensor): A 2D depth tensor.
+        file_path (str): Path to save the PNG file.
+    """
+    # Ensure tensor is in CPU and detach it from the computation graph
+    tensor = tensor.detach().cpu()
+
+    # Normalize the tensor to 0-255 and convert to uint8
+    normalized_tensor = 255 * (tensor - tensor.min()) / (tensor.max() - tensor.min())
+    image = normalized_tensor.to(torch.uint8)
+
+    # Convert to PIL Image and save
+    pil_image = transforms.ToPILImage()(image)
+    pil_image.save(file_path, 'PNG')
 
 
 @dataclass
@@ -46,6 +81,8 @@ class MulticamVideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
     """
 
     skip_extract:bool = False 
+    use_depth:bool = True 
+    skip_depth_extract:bool = False 
     num_frames_target: int = 300
     """Target number of frames to use per video, results may not be exact."""
     percent_radius_crop: float = 1.0
@@ -176,20 +213,115 @@ class MulticamVideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
                 assert(first_frame_path.exists() == True)
                 shutil.copy(first_frame_path,self.image_dir / f"{video.stem}.png")
 
-        if num_extracted_frames < 0:
+        if num_extracted_frames <= 0:
             print(" WARNING: num frames extracted was 0")
 
         # Run Colmap
+        cam_names = [f.stem for f in videos]
         if not self.skip_colmap:
             # TODO: consider adding back mask path
             self._run_colmap(None)
+            # Undistort multi-cam frames
+            self._undistort(cam_names)
 
-        summary_log += self._save_transforms(num_extracted_frames, [f.stem for f in videos], None,None)
+        # Extract per-frame Depth Maps
+        if not self.skip_depth_extract:
+            self._export_depth(multicam_names=cam_names)
+
+        if self.skip_extract and self.skip_colmap:
+            num_extracted_frames = self.num_frames_target
+
+        summary_log += self._save_transforms(num_extracted_frames, cam_names, None,None)
 
         CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
         for summary in summary_log:
             CONSOLE.log(summary)
+
+
+    def _undistort(self, cam_names: List[str]):
+        distorted_colmap_model_path = self.output_dir / Path("colmap/distorted/sparse/0")
+        
+
+        if (distorted_colmap_model_path / "cameras.bin").exists():
+            # Load Distorted Colmap images and cameras
+            recon_dir = distorted_colmap_model_path
+            cam_id_to_camera = read_cameras_binary(recon_dir / "cameras.bin")
+            im_id_to_image = read_images_binary(recon_dir / "images.bin")
+            cam_name_to_cam_id = {}
+
+            for cam_name in cam_names:
+                for im_id, im_data in im_id_to_image.items():
+                    if cam_name in im_data.name:
+                        cam_name_to_cam_id[cam_name] = im_data.camera_id
+
+            for cam_name in cam_names:
+                per_cam_dir = self.output_dir / f"{cam_name}"
+                per_cam_images_dir = per_cam_dir / "images"
+                output_filename = self.output_dir / f"undistort_{cam_name}.txt"
+                cam_id = cam_name_to_cam_id[cam_name]
+                cam = cam_id_to_camera[cam_id]
+
+                to_write = [cam.model, cam.width, cam.height, *cam.params]
+                cam_params = " ".join([str(elem) for elem in to_write])
+                distorted_images = sorted(os.listdir(per_cam_images_dir))
+
+                with open(output_filename, 'w') as file:
+                    for image_path in distorted_images:
+                       file.write(f"{image_path} {cam_params}\n")
+                    print(f"\nINFO: File '{output_filename}' written successfully with camera parameters.")
+
+      # Run Standalone Image Undistorter
+                output_path = (self.output_dir / f"colmap/undistorted/{cam_name}/images")
+                output_path.mkdir(exist_ok=True,parents=True)
+
+                undistort_command = f"colmap image_undistorter_standalone --input_file {output_filename} --output_path {output_path} --image_path {per_cam_images_dir}"
+      
+                subprocess.run(undistort_command, shell=True, check=True)
+                process_data_utils.downscale_images(
+                    output_path,
+                    self.num_downscales,
+                    folder_name="images",
+                    nearest_neighbor=True,
+                    verbose=self.verbose,
+                )
+
+    def _export_depth(self,multicam_names=[]) -> Tuple[Optional[Dict[int, Path]], List[str]]:
+        """This method will create the depth images for multi-cam directories.
+
+        Returns:
+            Depth file paths indexed by COLMAP image id, logs
+        """
+        summary_log = []
+        if self.use_depth and not self.skip_depth_extract:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            repo = "isl-org/ZoeDepth"
+            depth_model = torch_compile(torch.hub.load(repo, "ZoeD_N", pretrained=True).to(device))
+            for cam_name in multicam_names:
+                per_cam_dir = self.output_dir / f"colmap/undistorted/{cam_name}"
+                print(f"Processing depth for {cam_name}. writing to {per_cam_dir}")
+                per_cam_images_dir = per_cam_dir / "images"
+                per_cam_depth_dir = per_cam_dir / "depths"
+                per_cam_depth_dir.mkdir(exist_ok=True,parents=True)
+                cam_images = per_cam_images_dir.glob("*.png")  # TODO: support jpg
+                # TODO:  Downsample size for directories images_2, images_4, and images_8
+                with torch.no_grad():
+                    for image_path in cam_images:
+                        img_tensor = image_path_to_tensor(image_path)
+                        image = torch.permute(img_tensor, (2, 0, 1)).unsqueeze(0).to(device)
+                        depth_image = depth_model.infer(image).squeeze()#.unsqueeze(-1)
+                        depth_path =  per_cam_depth_dir / (str(Path(image_path).stem) + str(Path(image_path.suffix)))
+                        save_depth_tensor_to_png(depth_image,depth_path)
+                summary_log.append(
+                    process_data_utils.downscale_images(
+                        per_cam_images_dir,
+                        self.num_downscales,
+                        folder_name="depths",
+                        nearest_neighbor=True,
+                        verbose=self.verbose,
+                    )
+                )
+        return None, summary_log
 
     def _save_transforms(
         self,
@@ -253,7 +385,8 @@ class MulticamVideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
                             cam_name = Path(im_data.name).stem
                             nice_frame_num = "{:05d}".format(frame_num)
 
-                            name = Path(f"./{cam_name}/images/frame_{nice_frame_num}.png")
+                            name = Path(f"./colmap/undistorted/{cam_name}/images/frame_{nice_frame_num}.png")
+                            depth_name = Path(f"./colmap/undistorted/{cam_name}/depths/frame_{nice_frame_num}.png")
 
                             frame = {
                                 "file_path": name.as_posix(),
@@ -261,6 +394,11 @@ class MulticamVideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
                                 "colmap_im_id": im_id,
                                 "time": (frame_num - 1) / num_frames
                             }
+                            if self.use_depth:
+                                if (self.output_dir / depth_name).exists():
+                                    frame["depth_file_path"] = depth_name.as_posix()
+                                else:
+                                    print(f"missing depth path {depth_name} at {self.output_dir}")
                             frame.update(per_cam_out)
                             # TODO add back camera mask and depth path
                             #if camera_mask_path is not None:

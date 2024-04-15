@@ -68,6 +68,8 @@ class FullImageDatamanagerConfig(DataManagerConfig):
     """The image type returned from manager, caching images in uint8 saves memory"""
     max_thread_workers: Optional[int] = None
     """The maximum number of threads to use for caching images. If None, uses all available threads."""
+    use_depth: bool = True 
+    """Use available depth maps."""
 
 
 class FullImageDatamanager(DataManager, Generic[TDataset]):

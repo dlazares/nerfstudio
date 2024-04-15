@@ -126,6 +126,10 @@ class DynamicSplatfactoModelConfig(ModelConfig):
     num_random: int = 50000
     """Number of gaussians to initialize if random init is used"""
     random_scale: float = 10.0
+    """maximum degree of spherical harmonics to use"""
+    use_depth_loss: bool = True 
+    """Regularizer for monocular depth loss"""
+    mono_depth_lambda: float = 0.001
     "Size of the cube to initialize random gaussians within"
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
@@ -139,7 +143,7 @@ class DynamicSplatfactoModelConfig(ModelConfig):
     """threshold of ratio of gaussian max to min scale before applying regularization
     loss from the PhysGaussian paper
     """
-    output_depth_during_training: bool = False
+    output_depth_during_training: bool = True 
     """If True, output depth during training. Otherwise, only output depth during evaluation."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
 
@@ -252,6 +256,8 @@ class DynamicSplatfactoModel(Model):
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = SSIM(data_range=1.0, size_average=True, channel=3)
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        if self.config.use_depth_loss:
+            self.depth_loss = torch.nn.MSELoss() 
         self.step = 0
 
         self.crop_box: Optional[OrientedBox] = None
@@ -905,7 +911,10 @@ class DynamicSplatfactoModel(Model):
         gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         metrics_dict = {}
         predicted_rgb = outputs["rgb"]
+        predicted_depth = outputs["depth"]
+        pseudo_gt_depth = self.get_gt_img(batch["depth_image"])
         metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        metrics_dict["depth_loss"] = self.depth_loss(pseudo_gt_depth, predicted_depth)
 
         metrics_dict["gaussian_count"] = self.num_points
         self.camera_optimizer.get_metrics_dict(metrics_dict)
@@ -921,6 +930,10 @@ class DynamicSplatfactoModel(Model):
         """
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         pred_img = outputs["rgb"]
+        depth_out = outputs["depth"]
+        mono_depth_gt = None
+        if "depth_image" in batch:
+            mono_depth_gt = self.get_gt_img(batch["depth_image"])
 
         # Set masked part of both ground-truth and rendered image to black.
         # This is a little bit sketchy for the SSIM loss.
@@ -931,6 +944,8 @@ class DynamicSplatfactoModel(Model):
             assert mask.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
             gt_img = gt_img * mask
             pred_img = pred_img * mask
+            if "depth_image" in batch: 
+                mono_depth_gt = mono_depth_gt * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
         simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
@@ -947,8 +962,18 @@ class DynamicSplatfactoModel(Model):
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
+        depth_loss = 0
+        if self.config.use_depth_loss:
+            if "depth_image" in batch and self.config.mono_depth_lambda > 0.0 and mono_depth_gt is not None:
+                valid_gt_mask = mono_depth_gt > 0.0
+                mono_depth_loss = self.depth_loss(
+                    depth_out[valid_gt_mask], mono_depth_gt[valid_gt_mask].float()
+                )
+                depth_loss += self.config.mono_depth_lambda * mono_depth_loss
+        main_loss = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss + depth_loss
+
         loss_dict = {
-            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
+            "main_loss": main_loss,
             "scale_reg": scale_reg,
         }
         if self.training:
